@@ -158,3 +158,61 @@ export AIDEV_DOCTOR_DOMAINS="api.github.com api.openai.com"
 4. Users: `aidev rm && aidev` or Dev Containers → Rebuild Container.
 
 Happy (and safe) shipping! 🚀
+
+---
+
+## Using with VS Code Dev Containers
+
+You can work two ways. **Pick one per project** (don’t mix them at the same time).
+
+### Option A — Attach to a running `aidev` container (no repo config)
+1. In your project on the host:
+   ```bash
+   aidev
+   ```
+2. VS Code → Command Palette → **Dev Containers: Attach to Running Container…**  
+   Choose the container named `aidev-<folder>-<hash>`.
+3. In the container, your project is at **/workspaces/app**. Open a terminal (it should say `vscode@<container>`).
+
+**To refresh to a new image:** on the host run `aidev rm && aidev`, then re-attach.
+
+### Option B — Use `.devcontainer/devcontainer.json` (VS Code creates the container)
+Create `.devcontainer/devcontainer.json` in your repo:
+
+```json
+{
+  "name": "Secure AI Dev (published image)",
+  "image": "docker.io/pdrittenhouse/secure-ai-dev:1",
+  "workspaceFolder": "/workspaces/app",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/app,type=bind",
+  "runArgs": [
+    "--cap-add=NET_ADMIN",
+    "--cap-add=NET_RAW",
+    "--add-host=host.docker.internal:host-gateway"
+  ],
+  "mounts": [
+    "source=${env:HOME}/.secure-ai-dev/security/allowlist,target=/opt/security/allowlist,type=bind,readonly"
+  ],
+  "remoteUser": "vscode",
+  "postStartCommand": "sudo /opt/security/setup-firewall.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-docker",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "EditorConfig.EditorConfig"
+      ]
+    }
+  },
+  "shutdownAction": "stopContainer"
+}
+```
+
+Open your folder in VS Code, then: **Dev Containers → Reopen in Container**.
+
+### Tips & Troubleshooting
+- **Firewall didn’t load?** Check the `postStartCommand` logs (Terminal → Output → Dev Containers) or run `aidev doctor --verbose` inside the container.
+- **Host services (LocalWP) from Linux?** We add `--add-host=host.docker.internal:host-gateway`. Use `host.docker.internal` from inside the container.
+- **Updating the image:** change the `image` tag in `devcontainer.json` and run **Rebuild Container**.
+- **Per‑project allowlist:** use `aidev domains add api.openai.com` on the host to create/update `./.allowed-domains.txt`.
