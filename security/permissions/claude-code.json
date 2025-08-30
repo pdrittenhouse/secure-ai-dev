@@ -1,0 +1,27 @@
+{
+  "allowedTools": [
+    "git",
+    "npm",
+    "node",
+    "composer",
+    "php",
+    "wp",
+    "bash"
+  ],
+  "deniedTools": [
+    "curl",
+    "wget",
+    "nc",
+    "ssh"
+  ],
+  "requireReviewFor": [
+    "package.json",
+    "composer.json",
+    "composer.lock",
+    "wp-config.php",
+    ".htaccess",
+    ".devcontainer/**",
+    ".github/**"
+  ],
+  "notes": "Avoid piping untrusted content to shells. No one-liner installers."
+}

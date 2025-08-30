@@ -1,0 +1,27 @@
+{
+  "name": "Secure AI Dev (published image)",
+  "image": "docker.io/pdrittenhouse/secure-ai-dev:1",
+  "workspaceFolder": "/workspaces/app",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/app,type=bind",
+  "runArgs": [
+    "--cap-add=NET_ADMIN",
+    "--cap-add=NET_RAW",
+    "--add-host=host.docker.internal:host-gateway"
+  ],
+  "mounts": [
+    "source=${env:HOME}/.secure-ai-dev/security/allowlist,target=/opt/security/allowlist,type=bind,readonly"
+  ],
+  "remoteUser": "vscode",
+  "postStartCommand": "sudo /opt/security/setup-firewall.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-docker",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "EditorConfig.EditorConfig"
+      ]
+    }
+  },
+  "shutdownAction": "stopContainer"
+}

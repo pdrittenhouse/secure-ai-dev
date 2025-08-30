@@ -1,0 +1,18 @@
+# Packages & VCS
+registry.npmjs.org
+github.com
+api.github.com
+objects.githubusercontent.com
+codeload.github.com
+nodejs.org
+
+# AI APIs (include only what you actually use)
+api.anthropic.com
+api.openai.com
+api.mistral.ai
+generativelanguage.googleapis.com
+# Azure OpenAI example (use your exact resource host)
+# myresource.openai.azure.com
+
+# Host access for local tests
+host.docker.internal

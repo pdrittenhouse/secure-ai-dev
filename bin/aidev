@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+# aidev — start and manage a secure AI dev toolbox container for the current folder
+# Features: start/sh/stop/rm/ls/reload/doctor, domains add|remove|list|test
+set -euo pipefail
+
+# --- Defaults (override via env or ~/.secure-ai-dev/config) ---
+SECURE_AI_HOME="${SECURE_AI_HOME:-$HOME/.secure-ai-dev}"
+SECURE_AI_IMAGE="${SECURE_AI_IMAGE:-secure-ai-dev:1}"
+ALLOWLIST_DIR_DEFAULT="$SECURE_AI_HOME/security/allowlist"
+ALLOWLIST_DIR="${ALLOWLIST_DIR:-$ALLOWLIST_DIR_DEFAULT}"
+PREFIX="${AIDEV_PREFIX:-aidev}"
+
+# Optional: load config
+if [[ -f "$SECURE_AI_HOME/config" ]]; then
+  # shellcheck disable=SC1090
+  source "$SECURE_AI_HOME/config"
+fi
+
+hash_pwd() {
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$PWD" | shasum | awk '{print substr($1,1,8)}'
+  else
+    printf '%s' "$PWD" | sha1sum | awk '{print substr($1,1,8)}'
+  fi
+}
+container_name() { echo "$PREFIX-$(basename "$PWD")-$(hash_pwd)"; }
+proj_allow() { echo "$PWD/.allowed-domains.txt"; }
+
+usage() {
+  cat <<'EOF'
+Usage: aidev [start|sh|stop|rm|ls|reload|doctor|domains]
+  start          Start or reattach a secure container for this folder
+  sh             Open a bash shell inside the container
+  stop           Stop the container
+  rm             Remove the container (safe; code stays on host)
+  ls             List all aidev-* containers
+  reload         Re-apply firewall rules inside the container
+  doctor [--verbose]
+                 Diagnostics (mounts, firewall, curl tests). With --verbose,
+                 checks per-domain ACCEPT rules for common hosts.
+  domains add <host> [host...]
+                 Add domain(s) to ./.allowed-domains.txt (creates if missing) + reload
+  domains remove <host> [host...]
+                 Remove domain(s) from the project allowlist + reload
+  domains list   Show global and project allowlists
+  domains test <host> [host...]
+                 Resolve & report ACCEPT rules now (no file edits)
+
+Env vars:
+  SECURE_AI_HOME     (default: $HOME/.secure-ai-dev)
+  SECURE_AI_IMAGE    (default: secure-ai-dev:1)
+  AIDEV_PREFIX       (default: aidev)
+  ALLOWLIST_DIR      (default: $SECURE_AI_HOME/security/allowlist)
+  AIDEV_DOCTOR_DOMAINS  default: api.github.com api.openai.com api.anthropic.com registry.npmjs.org github.com codeload.github.com objects.githubusercontent.com nodejs.org
+EOF
+}
+
+# Platform-specific host alias (Linux only)
+LINUX_HOST_FLAG=""
+if [[ "$(uname -s)" == "Linux" ]]; then
+  LINUX_HOST_FLAG="--add-host=host.docker.internal:host-gateway"
+fi
+
+ensure_running() {
+  local cname
+  cname="$(container_name)"
+  if ! docker ps -a --format '{{.Names}}' | grep -qx "$cname"; then
+    echo "No container for this folder yet. Starting one…"
+    "$0" start
+  fi
+}
+
+sanitize_domain() {
+  local s="$1"
+  s="$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')"
+  s="${s#http://}"; s="${s#https://}"; s="${s#ssh://}"; s="${s#git+https://}"
+  s="${s%%/*}"; s="${s%%\?*}"; s="${s%%#*}"; s="${s##*@}"; s="${s%%:*}"
+  printf '%s' "$(printf '%s' "$s" | awk '{$1=$1;print}')"
+}
+
+append_unique_line() {
+  local file="$1" line="$2"
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  # Ensure trailing newline
+  tail -c1 "$file" >/dev/null 2>&1 || echo >> "$file"
+  if grep -Fxq "$line" "$file"; then
+    return 1
+  else
+    echo "$line" >> "$file"
+    return 0
+  fi
+}
+
+remove_exact_line() {
+  local file="$1" line="$2"
+  [[ -f "$file" ]] || return 1
+  if sed --version >/dev/null 2>&1; then
+    sed -i "\|^$line\$|d" "$file"
+  else
+    sed -i '' "\|^$line\$|d" "$file"
+  fi
+}
+
+cmd="${1:-start}"
+shift || true
+
+case "$cmd" in
+  start)
+    cname="$(container_name)"
+    if docker ps -a --format '{{.Names}}' | grep -qx "$cname"; then
+      docker start "$cname" >/dev/null
+      echo "Started existing: $cname"
+    else
+      echo "Using image: ${SECURE_AI_IMAGE}"
+      docker run -d --name "$cname" \
+        --cap-add=NET_ADMIN --cap-add=NET_RAW \
+        $LINUX_HOST_FLAG \
+        -v "$PWD":/workspaces/app \
+        -v "$ALLOWLIST_DIR":/opt/security/allowlist:ro \
+        "$SECURE_AI_IMAGE" >/dev/null
+      echo "Started new: $cname"
+    fi
+    ;;
+
+  sh)
+    ensure_running
+    docker exec -it "$(container_name)" bash
+    ;;
+
+  stop)
+    docker stop "$(container_name)"
+    ;;
+
+  rm)
+    docker rm -f "$(container_name)"
+    ;;
+
+  ls)
+    docker ps -a --format 'table {{.Names}}\t{{.Status}}' | grep "^$PREFIX-" || true
+    ;;
+
+  reload)
+    ensure_running
+    docker exec -it "$(container_name)" sudo /opt/security/setup-firewall.sh
+    ;;
+
+  doctor)
+    VERBOSE=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -v|--verbose) VERBOSE=1; shift ;;
+        *) shift ;;
+      esac
+    done
+    ensure_running
+    DOMAINS="${AIDEV_DOCTOR_DOMAINS:-api.github.com api.openai.com api.anthropic.com registry.npmjs.org github.com codeload.github.com objects.githubusercontent.com nodejs.org}"
+    docker exec -e VERBOSE="$VERBOSE" -e DOMAINS="$DOMAINS" -it "$(container_name)" bash -lc '
+      set -e
+      echo "== whoami =="; whoami
+      echo "== sudo check =="; sudo -n true && echo "sudo OK" || echo "sudo not OK"
+      echo "== mounts =="; mount | grep /opt/security/allowlist || true
+      echo "== allowlist dir =="; ls -la /opt/security/allowlist || true
+      echo "== global-allowed.txt (first 10) =="; sed -n "1,10p" /opt/security/allowlist/global-allowed.txt || true
+      echo "== project .allowed-domains.txt =="; [ -f /workspaces/app/.allowed-domains.txt ] && sed -n "1,10p" /workspaces/app/.allowed-domains.txt || echo "(none)"
+      echo "== reload firewall =="; sudo /opt/security/setup-firewall.sh || true
+      echo "== iptables OUTPUT (first few) =="; sudo iptables -S OUTPUT | head || true
+      echo "== ip6tables OUTPUT (first few) =="; sudo ip6tables -S OUTPUT | head || true
+      echo "== curl api.github.com (5s) ==";  curl -I -m 5 https://api.github.com | head -n1 || true
+      echo "== curl api.openai.com (5s) ==";  curl -I -m 5 https://api.openai.com | head -n1 || true
+      if [[ "${VERBOSE:-0}" = "1" ]]; then
+        echo "== verbose per-domain checks =="
+        for d in $DOMAINS; do
+          echo "--- $d ---"
+          FOUND_GLOBAL=$(grep -Fxc "$d" /opt/security/allowlist/global-allowed.txt || true)
+          FOUND_PROJ=0; [[ -f /workspaces/app/.allowed-domains.txt ]] && FOUND_PROJ=$(grep -Fxc "$d" /workspaces/app/.allowed-domains.txt || true)
+          echo "in allowlists? global=$FOUND_GLOBAL project=$FOUND_PROJ"
+          IPs=$(getent ahosts "$d" | awk "{print \$1}" | sort -u)
+          if [[ -z "$IPs" ]]; then echo "  (no DNS resolution)"; continue; fi
+          while read -r ip; do
+            [[ -z "$ip" ]] && continue
+            if [[ "$ip" == *:* ]]; then
+              RULE=$(sudo ip6tables -S OUTPUT | grep -F "$ip" || true)
+              [[ -n "$RULE" ]] && echo "  [OK] v6 $ip  -> $(echo "$RULE" | head -n1)" || echo "  [MISS] v6 $ip  (no ACCEPT rule)"
+            else
+              RULE=$(sudo iptables -S OUTPUT | grep -F "$ip" || true)
+              [[ -n "$RULE" ]] && echo "  [OK] v4 $ip  -> $(echo "$RULE" | head -n1)" || echo "  [MISS] v4 $ip  (no ACCEPT rule)"
+            fi
+          done <<< "$IPs"
+        done
+      fi
+    '
+    ;;
+
+  domains)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      add)
+        [[ $# -ge 1 ]] || { echo "Usage: aidev domains add <host> [host...]"; exit 1; }
+        f="$(proj_allow)"; added=0
+        for raw in "$@"; do
+          h="$(sanitize_domain "$raw")"
+          [[ -z "$h" || "$h" == /* || "$h" == *"/"* ]] && { echo "Skip invalid: $raw"; continue; }
+          if append_unique_line "$f" "$h"; then echo "Added: $h"; added=1; else echo "Already present: $h"; fi
+        done
+        [[ $added -eq 1 ]] && { "$0" reload; echo "Firewall reloaded."; } || echo "No changes."
+        ;;
+      remove)
+        [[ $# -ge 1 ]] || { echo "Usage: aidev domains remove <host> [host...]"; exit 1; }
+        f="$(proj_allow)"; changed=0
+        for raw in "$@"; do
+          h="$(sanitize_domain "$raw")"
+          if [[ -f "$f" ]] && grep -Fxq "$h" "$f"; then remove_exact_line "$f" "$h"; echo "Removed: $h"; changed=1
+          else echo "Not found: $h"; fi
+        done
+        [[ $changed -eq 1 ]] && { "$0" reload; echo "Firewall reloaded."; } || echo "No changes."
+        ;;
+      list)
+        echo "== Global allowlist ($ALLOWLIST_DIR/global-allowed.txt) =="
+        sed -n '1,200p' "$ALLOWLIST_DIR/global-allowed.txt" 2>/dev/null || echo "(missing)"
+        echo
+        echo "== Project allowlist ($(proj_allow)) =="
+        sed -n '1,200p' "$(proj_allow)" 2>/dev/null || echo "(none)"
+        ;;
+      test)
+        [[ $# -ge 1 ]] || { echo "Usage: aidev domains test <host> [host...]"; exit 1; }
+        ensure_running
+        HOSTS=""
+        for raw in "$@"; do h="$(sanitize_domain "$raw")"; [[ -n "$h" ]] && HOSTS="$HOSTS $h"; done
+        HOSTS="${HOSTS# }"
+        docker exec -e HOSTS="$HOSTS" -it "$(container_name)" bash -lc '
+          set -e
+          echo "Testing domains (no file edits): $HOSTS"
+          for d in $HOSTS; do
+            echo "--- $d ---"
+            IPs=$(getent ahosts "$d" | awk "{print \$1}" | sort -u)
+            if [[ -z "$IPs" ]]; then echo "  (no DNS resolution)"; continue; fi
+            miss=0
+            while read -r ip; do
+              [[ -z "$ip" ]] && continue
+              if [[ "$ip" == *:* ]]; then
+                RULE=$(sudo ip6tables -S OUTPUT | grep -F "$ip" || true)
+                [[ -n "$RULE" ]] && echo "  [OK] v6 $ip  -> $(echo "$RULE" | head -n1)" || { echo "  [MISS] v6 $ip"; miss=1; }
+              else
+                RULE=$(sudo iptables -S OUTPUT | grep -F "$ip" || true)
+                [[ -n "$RULE" ]] && echo "  [OK] v4 $ip  -> $(echo "$RULE" | head -n1)" || { echo "  [MISS] v4 $ip"; miss=1; }
+              fi
+            done <<< "$IPs"
+            [[ $miss -eq 1 ]] && echo "  → To allow: aidev domains add $d"
+          done
+        '
+        ;;
+      *)
+        echo "Usage: aidev domains {add|remove|list|test} ..."; exit 1
+        ;;
+    esac
+    ;;
+
+  -h|--help|help)
+    usage
+    ;;
+
+  *)
+    echo "Unknown command: $cmd"
+    usage
+    exit 1
+    ;;
+esac
