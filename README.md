@@ -218,3 +218,4 @@ Happy (and safe) shipping! 🚀
 - **Host services (LocalWP) from Linux?** We add `--add-host=host.docker.internal:host-gateway`. Use `host.docker.internal` from inside the container.
 - **Updating the image:** change the `image` tag in `devcontainer.json` and run **Rebuild Container**.
 - **Per‑project allowlist:** use `aidev domains add api.openai.com` on the host to create/update `./.allowed-domains.txt`.
+- **Attaching the wrong folder:** In the VS Code container window press F1 → File: Open Folder…, type /workspaces/app → OK. You should now see your project files. Then type File: Open Folder… → /workspaces/app (VS Code can remember this per container window).
