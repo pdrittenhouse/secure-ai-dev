@@ -111,58 +111,6 @@ Or reference your **locally built** tag (for development):
 
 ---
 
-## Using with VS Code Dev Containers
-
-You can work two ways. **Pick one per project** (don’t mix them at the same time).
-
-### Option A — Attach to a running `aidev` container (no repo config)
-1. In your project on the host:
-   ```bash
-   aidev
-   ```
-2. VS Code → Command Palette (Press F1 / Shift+Cmd+P / Ctrl+Shift+P) → **Dev Containers: Attach to Running Container…**  
-   Choose the container named `aidev-<folder>-<hash>`.
-3. In the container, your project is at **/workspaces/app**. Open a terminal (it should say `vscode@<container>`).
-
-**To refresh to a new image:** on the host run `aidev rm && aidev`, then re-attach.
-
-### Option B — Use `.devcontainer/devcontainer.json` (VS Code creates the container)
-Create `.devcontainer/devcontainer.json` in your repo:
-
-```json
-{
-  "name": "Secure AI Dev (published image)",
-  "image": "docker.io/pdrittenhouse/secure-ai-dev:1",
-  "workspaceFolder": "/workspaces/app",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/app,type=bind",
-  "runArgs": [
-    "--cap-add=NET_ADMIN",
-    "--cap-add=NET_RAW",
-    "--add-host=host.docker.internal:host-gateway"
-  ],
-  "mounts": [
-    "source=${env:HOME}/.secure-ai-dev/security/allowlist,target=/opt/security/allowlist,type=bind,readonly"
-  ],
-  "remoteUser": "vscode",
-  "postStartCommand": "sudo /opt/security/setup-firewall.sh",
-  "customizations": {
-    "vscode": {
-      "extensions": [
-        "ms-azuretools.vscode-docker",
-        "dbaeumer.vscode-eslint",
-        "esbenp.prettier-vscode",
-        "EditorConfig.EditorConfig"
-      ]
-    }
-  },
-  "shutdownAction": "stopContainer"
-}
-```
-
-Open your folder in VS Code, then: **Dev Containers → Reopen in Container**.
-
----
-
 ## `aidev` quick reference
 
 | Command | What it does |
@@ -190,6 +138,100 @@ export AIDEV_DOCTOR_DOMAINS="api.github.com api.openai.com"
 
 ---
 
+## Using VS Code — Attach to the running container (F1)
+
+If you started the container with `aidev`, you can attach without a devcontainer.json.
+
+1. On the host:
+   ```bash
+   cd /path/to/project
+   aidev
+   ```
+2. In VS Code, **press F1** (or **Shift+Cmd+P / Ctrl+Shift+P**) → **Dev Containers: Attach to Running Container…** → select your `aidev-<folder>-<hash>`.
+3. In the attached window: **File → Open Folder… → `/workspaces/app`** (this is your project mount).
+4. Verify networking: open a terminal and run `aidev doctor --verbose` or `sudo /opt/security/setup-firewall.sh`.
+
+> If you see only dotfiles like `.bashrc`, you opened the container home. Use **File → Open Folder… → `/workspaces/app`**.
+
+### Alternative: devcontainer.json (optional)
+```json
+{
+  "name": "Secure AI Dev",
+  "image": "docker.io/pdrittenhouse/secure-ai-dev:1",
+  "workspaceFolder": "/workspaces/app",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/app,type=bind",
+  "runArgs": ["--cap-add=NET_ADMIN","--cap-add=NET_RAW","--add-host=host.docker.internal:host-gateway"],
+  "mounts": [
+    "source=${env:HOME}/.secure-ai-dev/security/allowlist,target=/opt/security/allowlist,type=bind,readonly"
+  ],
+  "remoteUser": "vscode",
+  "postStartCommand": "sudo /opt/security/setup-firewall.sh",
+  "shutdownAction": "stopContainer"
+}
+```
+
+---
+
+## Install & Use **Claude Code** inside the container (zsh & bash)
+
+> The VS Code extension is just the UI. Install the **Claude Code CLI/runtime** where VS Code is running — in the **Dev Container** — so all traffic stays behind the firewall.
+
+### 1) Install the extension in the Dev Container
+Extensions → search **Claude Code** → ▼ menu → **Install in Dev Container** (not Local).
+
+### 2) Install the CLI via npm (no sudo; use a per‑user prefix)
+
+**Zsh**
+```zsh
+npm config set prefix ~/.local
+mkdir -p ~/.local/bin
+grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.zshrc || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+npm install -g @anthropic-ai/claude-code
+which claude || which claude-code
+claude --version 2>/dev/null || claude-code --version 2>/dev/null
+```
+
+**Bash**
+```bash
+npm config set prefix ~/.local
+mkdir -p ~/.local/bin
+grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.profile || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.profile
+source ~/.bashrc
+hash -r
+npm install -g @anthropic-ai/claude-code
+which claude || which claude-code
+claude --version 2>/dev/null || claude-code --version 2>/dev/null
+```
+
+**Troubleshooting**
+- `EACCES: permission denied`: you tried to write to `/usr/lib/node_modules`. Run `npm config set prefix ~/.local` first (no sudo).
+- “Oh My Zsh can’t be loaded from: bash”: don’t `source ~/.zshrc` while in bash. Either switch to `zsh` or update `~/.bashrc` as above.
+- Still stuck? Fix ownership and retry:
+  ```bash
+  sudo chown -R "$(id -u)":"$(id -g)" ~/.npm ~/.config || true
+  npm install -g @anthropic-ai/claude-code
+  ```
+
+### 3) API key (container)
+```bash
+export ANTHROPIC_API_KEY=sk-ant-…
+# Persist for zsh:
+grep -q ANTHROPIC_API_KEY ~/.zshrc || echo 'export ANTHROPIC_API_KEY=sk-ant-…' >> ~/.zshrc
+# Persist for bash:
+grep -q ANTHROPIC_API_KEY ~/.bashrc || echo 'export ANTHROPIC_API_KEY=sk-ant-…' >> ~/.bashrc
+```
+
+### 4) Allowlist on the host
+```bash
+aidev domains add api.anthropic.com
+aidev reload
+aidev doctor --verbose
+```
+
+---
+
 ## Git hygiene notes
 
 - ✅ **Commit**: `Dockerfile`, `security/` (scripts, rules), `bin/aidev`, docs.
@@ -211,11 +253,3 @@ export AIDEV_DOCTOR_DOMAINS="api.github.com api.openai.com"
 
 Happy (and safe) shipping! 🚀
 
----
-
-### Tips & Troubleshooting
-- **Firewall didn’t load?** Check the `postStartCommand` logs (Terminal → Output → Dev Containers) or run `aidev doctor --verbose` inside the container.
-- **Host services (LocalWP) from Linux?** We add `--add-host=host.docker.internal:host-gateway`. Use `host.docker.internal` from inside the container.
-- **Updating the image:** change the `image` tag in `devcontainer.json` and run **Rebuild Container**.
-- **Per‑project allowlist:** use `aidev domains add api.openai.com` on the host to create/update `./.allowed-domains.txt`.
-- **Attaching the wrong folder:** In the VS Code container window press F1 → File: Open Folder…, type /workspaces/app → OK. You should now see your project files. Then type File: Open Folder… → /workspaces/app (VS Code can remember this per container window).
